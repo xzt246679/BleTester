@@ -1,0 +1,72 @@
+workflows:
+  ios-trollstore-ipa:
+    name: Build BleTester IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      xcode: latest
+    scripts:
+      - name: Compile
+        script: |
+          set +e
+          APP=build/Payload/BleTester.app
+          rm -rf build BleTester.ipa compile.log
+          mkdir -p "$APP"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+
+          clang -arch arm64 -isysroot "$SDK" -mios-version-min=14.0 \
+            -fobjc-arc -O2 -Wall \
+            -framework UIKit -framework Foundation -framework CoreBluetooth \
+            -o "$APP/BleTester" \
+            Sources/main.m Sources/ViewController.m \
+            2>&1 | tee compile.log
+
+          RC=${PIPESTATUS[0]}
+          echo "=== clang rc=$RC ==="
+          if [ "$RC" -ne 0 ]; then
+            echo "===== ERRORS ====="
+            grep -E "error:" compile.log | head -30
+            exit 1
+          fi
+
+          cp Info.plist "$APP/Info.plist"
+          chmod +x "$APP/BleTester"
+          echo "编译成功"
+
+      - name: Generate entitlements
+        script: |
+          set -e
+          python3 - <<'PYEOF'
+          import plistlib
+          ent = {
+              "application-identifier": "com.coldcoffee.bletester",
+              "com.apple.developer.team-identifier": "COLDFCOFFEE",
+              "get-task-allow": True,
+              "platform-application": True,
+              "com.apple.private.security.no-sandbox": True,
+              "com.apple.private.security.container-required": False,
+              "com.apple.private.security.storage.AppDataContainers": True,
+          }
+          with open("final.entitlements", "wb") as f:
+              plistlib.dump(ent, f, fmt=plistlib.FMT_XML)
+          print("keys:", len(ent))
+          PYEOF
+
+      - name: Sign
+        script: |
+          set +e
+          codesign --force --sign - --entitlements final.entitlements --timestamp=none \
+            build/Payload/BleTester.app/BleTester
+          echo "rc=$?"
+
+      - name: Package IPA
+        script: |
+          set -e
+          cd build
+          zip -qry ../BleTester.ipa Payload
+          cd ..
+          ls -la BleTester.ipa
+
+    artifacts:
+      - BleTester.ipa
+      - compile.log
